@@ -2,7 +2,7 @@ image: alpine/edge
 packages:
   - go
 sources:
-  - https://github.com/emersion/go-webdav
+  - https://github.com/yinjun1991/caldav-client-go
 tasks:
   - build: |
       cd go-webdav

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/emersion/go-webdav"
+	webdav "github.com/yinjun1991/caldav-client-go"
 )
 
 const appleID = "<appleID>"

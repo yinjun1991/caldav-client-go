@@ -1,4 +1,4 @@
-module github.com/emersion/go-webdav
+module github.com/yinjun1991/caldav-client-go
 
 go 1.13
 

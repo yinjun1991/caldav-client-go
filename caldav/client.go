@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/emersion/go-webdav"
-	"github.com/emersion/go-webdav/internal"
+	webdav "github.com/yinjun1991/caldav-client-go"
+	"github.com/yinjun1991/caldav-client-go/internal"
 )
 
 const MIMEType = "text/calendar"
