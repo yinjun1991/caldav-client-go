@@ -6,10 +6,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
-	"net/url"
-	"strconv"
 	"strings"
-	"time"
 
 	webdav "github.com/yinjun1991/caldav-client-go"
 	"github.com/yinjun1991/caldav-client-go/internal"
@@ -58,18 +55,7 @@ func (c *Client) FindCalendarHomeSet(ctx context.Context, principal string) (str
 }
 
 func (c *Client) FindCalendars(ctx context.Context, calendarHomeSet string) ([]Calendar, error) {
-	propfind := internal.NewPropNamePropFind(
-		internal.ResourceTypeName,
-		internal.DisplayNameName,
-		CalendarDescriptionName,
-		MaxResourceSizeName,
-		SupportedCalendarComponentSetName,
-		CalendarColorName,
-		CalendarTimezoneName,
-		internal.SyncTokenName,
-		internal.CurrentUserPrivilegeSetName,
-	)
-	ms, err := c.ic.PropFind(ctx, calendarHomeSet, internal.DepthOne, propfind)
+	ms, err := c.ic.PropFind(ctx, calendarHomeSet, internal.DepthOne, calendarPropFind)
 	if err != nil {
 		return nil, err
 	}
@@ -102,20 +88,8 @@ func (c *Client) FindCalendars(ctx context.Context, calendarHomeSet string) ([]C
 // The path parameter should be the full path to a calendar collection,
 // not a calendar home set path.
 func (c *Client) GetCalendar(ctx context.Context, path string) (*Calendar, error) {
-	propfind := internal.NewPropNamePropFind(
-		internal.ResourceTypeName,
-		internal.DisplayNameName,
-		CalendarDescriptionName,
-		MaxResourceSizeName,
-		SupportedCalendarComponentSetName,
-		CalendarColorName,
-		CalendarTimezoneName,
-		internal.SyncTokenName,
-		internal.CurrentUserPrivilegeSetName,
-	)
-
 	// Use DepthZero to query only the specified calendar collection
-	resp, err := c.ic.PropFindFlat(ctx, path, propfind)
+	resp, err := c.ic.PropFindFlat(ctx, path, calendarPropFind)
 	if err != nil {
 		return nil, fmt.Errorf("caldav: failed to get calendar properties: %w", err)
 	}
@@ -135,213 +109,6 @@ func (c *Client) GetCalendar(ctx context.Context, path string) (*Calendar, error
 	}
 
 	return calendar, nil
-}
-
-// parseCalendarFromResponse 从 WebDAV 响应中解析日历属性
-func parseCalendarFromResponse(resp *internal.Response) (*Calendar, error) {
-	path, err := resp.Path()
-	if err != nil {
-		return nil, err
-	}
-
-	var resType internal.ResourceType
-	if err := resp.DecodeProp(&resType); err != nil {
-		// 如果 DAV:resourcetype 属性缺失，在同步场景下我们假设这是一个日历集合
-		// 这是因为同步请求通常只针对已知的日历集合路径进行
-		// Apple iCloud 等服务器在同步响应中可能不返回完整的属性集合
-		if !internal.IsNotFound(err) {
-			return nil, err
-		}
-		// 继续处理，假设这是一个日历集合
-	} else if !resType.Is(CalendarName) {
-		return nil, nil // 不是日历集合
-	}
-
-	var desc calendarDescription
-	if err := resp.DecodeProp(&desc); err != nil && !internal.IsNotFound(err) {
-		return nil, err
-	}
-
-	var dispName internal.DisplayName
-	if err := resp.DecodeProp(&dispName); err != nil && !internal.IsNotFound(err) {
-		return nil, err
-	}
-
-	var maxResSize maxResourceSize
-	if err := resp.DecodeProp(&maxResSize); err != nil && !internal.IsNotFound(err) {
-		return nil, err
-	}
-
-	var supportedCompSet supportedCalendarComponentSet
-	if err := resp.DecodeProp(&supportedCompSet); err != nil && !internal.IsNotFound(err) {
-		return nil, err
-	}
-
-	compNames := make([]string, 0, len(supportedCompSet.Comp))
-	for _, comp := range supportedCompSet.Comp {
-		compNames = append(compNames, comp.Name)
-	}
-
-	var calColor calendarColor
-	if err := resp.DecodeProp(&calColor); err != nil && !internal.IsNotFound(err) {
-		return nil, err
-	}
-
-	var calTimezone calendarTimezone
-	if err := resp.DecodeProp(&calTimezone); err != nil && !internal.IsNotFound(err) {
-		return nil, err
-	}
-
-	var syncToken string
-	if rawSyncToken := resp.PropStats[0].Prop.Get(internal.SyncTokenName); rawSyncToken != nil {
-		if err := rawSyncToken.Decode(&syncToken); err != nil {
-			return nil, err
-		}
-	}
-
-	var currentUserPrivileges []string
-	var privSet internal.CurrentUserPrivilegeSet
-	if err := resp.DecodeProp(&privSet); err != nil && !internal.IsNotFound(err) {
-		return nil, err
-	}
-	for _, priv := range privSet.Privileges {
-		for _, raw := range priv.Raw {
-			if name, ok := raw.XMLName(); ok {
-				currentUserPrivileges = append(currentUserPrivileges, name.Local)
-			}
-		}
-	}
-
-	return &Calendar{
-		Path:                  path,
-		Name:                  dispName.Name,
-		Description:           desc.Description,
-		MaxResourceSize:       maxResSize.Size,
-		SupportedComponentSet: compNames,
-		Color:                 calColor.Color,
-		Timezone:              calTimezone.Timezone,
-		SyncToken:             syncToken,
-		CurrentUserPrivileges: currentUserPrivileges,
-	}, nil
-}
-
-func encodeCalendarCompReq(c *CalendarCompRequest) (*comp, error) {
-	encoded := comp{Name: c.Name}
-
-	if c.AllProps {
-		encoded.Allprop = &struct{}{}
-	}
-	for _, name := range c.Props {
-		encoded.Prop = append(encoded.Prop, prop{Name: name})
-	}
-
-	if c.AllComps {
-		encoded.Allcomp = &struct{}{}
-	}
-	for _, child := range c.Comps {
-		encodedChild, err := encodeCalendarCompReq(&child)
-		if err != nil {
-			return nil, err
-		}
-		encoded.Comp = append(encoded.Comp, *encodedChild)
-	}
-
-	return &encoded, nil
-}
-
-func encodeCalendarReq(c *CalendarCompRequest) (*internal.Prop, error) {
-	compReq, err := encodeCalendarCompReq(c)
-	if err != nil {
-		return nil, err
-	}
-
-	expandReq := encodeExpandRequest(c.Expand)
-
-	calDataReq := calendarDataReq{Comp: compReq, Expand: expandReq}
-
-	getLastModReq := internal.NewRawXMLElement(internal.GetLastModifiedName, nil, nil)
-	getETagReq := internal.NewRawXMLElement(internal.GetETagName, nil, nil)
-	return internal.EncodeProp(&calDataReq, getLastModReq, getETagReq)
-}
-
-func encodeExpandRequest(e *CalendarExpandRequest) *expand {
-	if e == nil {
-		return nil
-	}
-	encoded := expand{
-		Start: dateWithUTCTime(e.Start),
-		End:   dateWithUTCTime(e.End),
-	}
-	return &encoded
-}
-
-func decodeCalendarObject(resp internal.Response, path string) (*CalendarObject, error) {
-	var calData calendarDataResp
-	if err := resp.DecodeProp(&calData); err != nil {
-		// Apple iCloud 等服务器在同步响应中可能不返回 calendar-data 属性
-		// 这是为了性能优化，符合 RFC 6578 的实现灵活性
-		// 在这种情况下，客户端需要单独获取日历对象数据
-		if !internal.IsNotFound(err) {
-			return nil, err
-		}
-		// calendar-data 缺失时，Data 字段为 nil，客户端可以根据需要单独获取
-	}
-
-	var getLastMod internal.GetLastModified
-	if err := resp.DecodeProp(&getLastMod); err != nil && !internal.IsNotFound(err) {
-		return nil, err
-	}
-
-	var getETag internal.GetETag
-	if err := resp.DecodeProp(&getETag); err != nil && !internal.IsNotFound(err) {
-		return nil, err
-	}
-
-	var getContentLength internal.GetContentLength
-	if err := resp.DecodeProp(&getContentLength); err != nil && !internal.IsNotFound(err) {
-		return nil, err
-	}
-
-	return &CalendarObject{
-		Path:          path,
-		ModTime:       time.Time(getLastMod.LastModified),
-		ContentLength: getContentLength.Length,
-		ETag:          string(getETag.ETag),
-		Data:          calData.Data, // 可能为 nil，表示需要单独获取
-	}, nil
-}
-
-func populateCalendarObject(co *CalendarObject, h http.Header) error {
-	if loc := h.Get("Location"); loc != "" {
-		u, err := url.Parse(loc)
-		if err != nil {
-			return err
-		}
-		co.Path = u.Path
-	}
-	if etag := h.Get("ETag"); etag != "" {
-		etag, err := strconv.Unquote(etag)
-		if err != nil {
-			return err
-		}
-		co.ETag = etag
-	}
-	if contentLength := h.Get("Content-Length"); contentLength != "" {
-		n, err := strconv.ParseInt(contentLength, 10, 64)
-		if err != nil {
-			return err
-		}
-		co.ContentLength = n
-	}
-	if lastModified := h.Get("Last-Modified"); lastModified != "" {
-		t, err := http.ParseTime(lastModified)
-		if err != nil {
-			return err
-		}
-		co.ModTime = t
-	}
-
-	return nil
 }
 
 func (c *Client) GetCalendarObject(ctx context.Context, path string) (*CalendarObject, error) {
@@ -379,19 +146,6 @@ func (c *Client) GetCalendarObject(ctx context.Context, path string) (*CalendarO
 		return nil, err
 	}
 	return co, nil
-}
-
-// PutCalendarObjectOptions contains options for PutCalendarObject
-type PutCalendarObjectOptions struct {
-	// IfMatch specifies the ETag that the resource must match for the update to succeed.
-	// Used for optimistic locking when updating existing resources.
-	// If specified and the resource's current ETag doesn't match, returns 412 Precondition Failed.
-	IfMatch string
-
-	// IfNoneMatch when set to "*" ensures the resource doesn't exist before creation.
-	// Used to prevent accidental overwrites when creating new resources.
-	// If specified as "*" and the resource exists, returns 412 Precondition Failed.
-	IfNoneMatch string
 }
 
 func (c *Client) PutCalendarObject(ctx context.Context, path string, body io.Reader, opts *PutCalendarObjectOptions) (*CalendarObject, error) {
@@ -571,21 +325,6 @@ func (c *Client) SyncCalendar(ctx context.Context, path string, query *SyncQuery
 	}
 
 	return ret, nil
-}
-
-// UpdateCalendarOptions contains options for updating Calendar properties
-type UpdateCalendarOptions struct {
-	// Name updates the display name of the calendar (displayname property)
-	Name *string
-
-	// Description updates the calendar description (calendar-description property)
-	Description *string
-
-	// Color updates the calendar color (calendar-color property)
-	Color *string
-
-	// Timezone updates the calendar timezone (calendar-timezone property)
-	Timezone *string
 }
 
 // UpdateCalendar updates the properties of a Calendar collection using PROPPATCH.
@@ -873,91 +612,118 @@ func (c *Client) ListCalendarObjects(ctx context.Context, path string, fetchData
 	return objects, nil
 }
 
-func encodeCompFilter(cf *CompFilter) (*compFilter, error) {
-	encoded := compFilter{Name: cf.Name}
-
-	if cf.IsNotDefined {
-		encoded.IsNotDefined = &struct{}{}
-	}
-
-	// 添加时间范围过滤器
-	if !cf.Start.IsZero() || !cf.End.IsZero() {
-		encoded.TimeRange = &timeRange{
-			Start: dateWithUTCTime(cf.Start),
-			End:   dateWithUTCTime(cf.End),
-		}
-	}
-
-	// 递归编码属性过滤器
-	for _, pf := range cf.Props {
-		encodedProp, err := encodePropFilter(&pf)
-		if err != nil {
-			return nil, err
-		}
-		encoded.PropFilters = append(encoded.PropFilters, *encodedProp)
-	}
-
-	// 递归编码组件过滤器
-	for _, childCf := range cf.Comps {
-		encodedChild, err := encodeCompFilter(&childCf)
-		if err != nil {
-			return nil, err
-		}
-		encoded.CompFilters = append(encoded.CompFilters, *encodedChild)
-	}
-
-	return &encoded, nil
+// SyncCalendarList 使用 WebDAV Collection Sync 同步日历列表
+// 这个方法实现了 RFC 6578 的 sync-collection REPORT，用于增量获取日历列表的变化
+func (c *Client) SyncCalendarList(
+	ctx context.Context,
+	calendarHomeSetURL string,
+	syncToken string,
+) (*CalendarListSyncResult, error) {
+	return c.SyncCalendarListWithLimit(ctx, calendarHomeSetURL, syncToken, 0)
 }
 
-func encodePropFilter(pf *PropFilter) (*propFilter, error) {
-	encoded := propFilter{Name: pf.Name}
-
-	if pf.IsNotDefined {
-		encoded.IsNotDefined = &struct{}{}
+// SyncCalendarListWithLimit 使用 WebDAV Collection Sync 同步日历列表，支持分页
+// limit 参数控制返回的最大结果数，0 表示不限制
+func (c *Client) SyncCalendarListWithLimit(
+	ctx context.Context,
+	calendarHomeSetURL string,
+	syncToken string,
+	limit uint,
+) (*CalendarListSyncResult, error) {
+	// 构建 limit 参数
+	var limitPtr *internal.Limit
+	if limit > 0 {
+		limitPtr = &internal.Limit{NResults: limit}
 	}
 
-	// 添加时间范围过滤器
-	if !pf.Start.IsZero() || !pf.End.IsZero() {
-		encoded.TimeRange = &timeRange{
-			Start: dateWithUTCTime(pf.Start),
-			End:   dateWithUTCTime(pf.End),
-		}
+	// 使用 RFC 6578 的 sync-collection REPORT
+	// 参数说明：
+	// - path: 日历主集合路径
+	// - syncToken: 上次同步的 token，空字符串表示初始同步
+	// - level: 深度为 1，只同步直接子集合（日历）
+	// - limit: 限制返回数量，nil 表示不限制
+	// - prop: 需要获取的属性
+	ms, err := c.ic.SyncCollection(ctx, calendarHomeSetURL, syncToken, internal.DepthOne, limitPtr, calendarPropFind.Prop)
+	if err != nil {
+		return nil, fmt.Errorf("failed to sync calendar list: %w", err)
 	}
 
-	// 添加文本匹配过滤器
-	if pf.TextMatch != nil {
-		encoded.TextMatch = &textMatch{
-			Text:            pf.TextMatch.Text,
-			NegateCondition: negateCondition(pf.TextMatch.NegateCondition),
-		}
+	result := &CalendarListSyncResult{
+		NextSyncToken: ms.SyncToken,
 	}
 
-	// 编码参数过滤器
-	for _, paramF := range pf.ParamFilter {
-		encodedParam, err := encodeParamFilter(&paramF)
+	// 解析响应中的日历信息
+	for _, resp := range ms.Responses {
+		path, err := resp.Path()
 		if err != nil {
-			return nil, err
+			// 如果路径解析失败，记录错误但继续处理其他响应
+			continue
 		}
-		encoded.ParamFilter = append(encoded.ParamFilter, *encodedParam)
+
+		// 跳过日历主集合本身
+		if path == calendarHomeSetURL ||
+			path == strings.TrimSuffix(calendarHomeSetURL, "/") ||
+			strings.TrimSuffix(path, "/") == strings.TrimSuffix(calendarHomeSetURL, "/") {
+			continue
+		}
+
+		// 检查响应状态，处理删除的日历
+		if respErr := resp.Err(); respErr != nil {
+			if httpErr, ok := respErr.(*internal.HTTPError); ok && httpErr.Code == http.StatusNotFound {
+				// 404 状态表示日历已被删除
+				result.DeletedCalendars = append(result.DeletedCalendars, path)
+				continue
+			}
+			// 其他错误继续处理，但记录日志
+			continue
+		}
+
+		// 解析日历属性
+		calendar, err := parseCalendarFromResponse(&resp)
+		if err != nil {
+			// 解析失败可能是因为资源不是日历，继续处理其他响应
+			continue
+		}
+
+		// 如果不是日历集合，跳过
+		if calendar == nil {
+			continue
+		}
+
+		// 验证 MaxResourceSize 的有效性
+		if calendar.MaxResourceSize < 0 {
+			return nil, fmt.Errorf("caldav: max-resource-size must be a positive integer for calendar %s", path)
+		}
+
+		// 根据响应状态判断是新增还是更新
+		// 在 sync-collection 中，所有返回的资源都被视为"更新"
+		// 实际的新增/更新区分需要客户端维护状态
+		// 这里我们将所有返回的日历都放入 UpdatedCalendars
+		// 客户端可以根据本地状态判断是新增还是更新
+		result.UpdatedCalendars = append(result.UpdatedCalendars, calendar)
 	}
 
-	return &encoded, nil
+	return result, nil
 }
 
-func encodeParamFilter(pf *ParamFilter) (*paramFilter, error) {
-	encoded := paramFilter{Name: pf.Name}
+// FindCurrentUserPrincipal finds the current user's principal path.
+func (c *Client) FindCurrentUserPrincipal(ctx context.Context) (string, error) {
+	propfind := internal.NewPropNamePropFind(internal.CurrentUserPrincipalName)
 
-	if pf.IsNotDefined {
-		encoded.IsNotDefined = &struct{}{}
+	// TODO: consider retrying on the root URI "/" if this fails, as suggested
+	// by the RFC?
+	resp, err := c.ic.PropFindFlat(ctx, "", propfind)
+	if err != nil {
+		return "", err
 	}
 
-	// 添加文本匹配过滤器
-	if pf.TextMatch != nil {
-		encoded.TextMatch = &textMatch{
-			Text:            pf.TextMatch.Text,
-			NegateCondition: negateCondition(pf.TextMatch.NegateCondition),
-		}
+	var prop internal.CurrentUserPrincipal
+	if err := resp.DecodeProp(&prop); err != nil {
+		return "", err
+	}
+	if prop.Unauthenticated != nil {
+		return "", fmt.Errorf("webdav: unauthenticated")
 	}
 
-	return &encoded, nil
+	return prop.Href.Path, nil
 }

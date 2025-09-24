@@ -1,6 +1,3 @@
-// Package caldav provides a client and server CalDAV implementation.
-//
-// CalDAV is defined in RFC 4791.
 package caldav
 
 import (
@@ -88,4 +85,44 @@ type SyncResponse struct {
 	Calendar  *Calendar // 集合本身的属性
 	Updated   []*CalendarObject
 	Deleted   []string
+}
+
+// CalendarListSyncResult represents the result of a calendar list synchronization
+type CalendarListSyncResult struct {
+	// AddedCalendars contains newly added calendars
+	AddedCalendars []*Calendar
+	// UpdatedCalendars contains calendars that have been modified
+	UpdatedCalendars []*Calendar
+	// DeletedCalendars contains paths of deleted calendars
+	DeletedCalendars []string
+	// NextSyncToken is the sync token to use for the next synchronization
+	NextSyncToken string
+}
+
+// PutCalendarObjectOptions contains options for PutCalendarObject
+type PutCalendarObjectOptions struct {
+	// IfMatch specifies the ETag that the resource must match for the update to succeed.
+	// Used for optimistic locking when updating existing resources.
+	// If specified and the resource's current ETag doesn't match, returns 412 Precondition Failed.
+	IfMatch string
+
+	// IfNoneMatch when set to "*" ensures the resource doesn't exist before creation.
+	// Used to prevent accidental overwrites when creating new resources.
+	// If specified as "*" and the resource exists, returns 412 Precondition Failed.
+	IfNoneMatch string
+}
+
+// UpdateCalendarOptions contains options for updating Calendar properties
+type UpdateCalendarOptions struct {
+	// Name updates the display name of the calendar (displayname property)
+	Name *string
+
+	// Description updates the calendar description (calendar-description property)
+	Description *string
+
+	// Color updates the calendar color (calendar-color property)
+	Color *string
+
+	// Timezone updates the calendar timezone (calendar-timezone property)
+	Timezone *string
 }

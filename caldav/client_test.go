@@ -11,8 +11,8 @@ import (
 	webdav "github.com/yinjun1991/caldav-client-go"
 )
 
-const appleID = "<appleID>"
-const appSpecificPassword = "<app specific password>"
+const appleID = "476296008@qq.com"
+const appSpecificPassword = "wnqk-ewqj-pdml-bdvj"
 
 // createAppleClient 创建连接到 Apple iCloud CalDAV 服务器的客户端
 func createAppleClient() (*Client, error) {
@@ -218,8 +218,8 @@ func TestAppleSyncCalendar(t *testing.T) {
 	// 执行初始同步（不提供 sync token）
 	log.Println("\n--- Initial Sync ---")
 	syncQuery := &SyncQuery{
-		SyncToken: "", // 空 token 表示初始同步
-		Limit:     0,  // 限制返回 10 个对象
+		SyncToken: "HwoQEgwAAGihSJhL0QAAAAEYARgAIhUI5pex0rzj+KoeEKbW9KrE0+TvswEoAEgA", // 空 token 表示初始同步
+		Limit:     0,                                                                  // 限制返回 10 个对象
 	}
 
 	syncResp, err := client.SyncCalendar(ctx, calendar.Path, syncQuery)
@@ -298,6 +298,10 @@ func TestAppleSyncCalendar(t *testing.T) {
 		} else {
 			log.Printf("  Data: nil (无法获取)")
 		}
+	}
+
+	for _, p := range syncResp.Deleted {
+		log.Printf("deleted: %s", p)
 	}
 }
 
@@ -746,4 +750,142 @@ func TestAppleDeleteEvents(t *testing.T) {
 	}
 
 	log.Println("\n=== Event Deletion Tests Completed ===")
+}
+
+func TestAppleCalendarList(t *testing.T) {
+	ctx := context.Background()
+
+	// 创建 Apple CalDAV 客户端
+	client, err := createAppleClient()
+	if err != nil {
+		t.Fatalf("Failed to create Apple client: %v", err)
+	}
+
+	log.Println("=== Apple CalDAV Calendar List Sync Test ===")
+
+	// 1. 查找当前用户主体 (Current User Principal)
+	log.Println("\n--- Step 1: Finding Current User Principal ---")
+	principal, err := client.FindCurrentUserPrincipal(ctx)
+	if err != nil {
+		t.Fatalf("Failed to find current user principal: %v", err)
+	}
+	log.Printf("Current User Principal: %s", principal)
+
+	// 2. 查找日历主集合 (Calendar Home Set)
+	log.Println("\n--- Step 2: Finding Calendar Home Set ---")
+	calendarHomeSet, err := client.FindCalendarHomeSet(ctx, principal)
+	if err != nil {
+		t.Fatalf("Failed to find calendar home set: %v", err)
+	}
+	log.Printf("Calendar Home Set: %s", calendarHomeSet)
+
+	// 3. 测试初始同步 (SyncCalendarList)
+	log.Println("\n--- Step 3: Initial Calendar List Sync ---")
+	syncResult, err := client.SyncCalendarList(ctx, calendarHomeSet, "")
+	if err != nil {
+		t.Fatalf("Failed to sync calendar list: %v", err)
+	}
+
+	log.Printf("Initial sync completed:")
+	log.Printf("  Next Sync Token: %s", syncResult.NextSyncToken)
+	log.Printf("  Added Calendars: %d", len(syncResult.AddedCalendars))
+	log.Printf("  Updated Calendars: %d", len(syncResult.UpdatedCalendars))
+	log.Printf("  Deleted Calendars: %d", len(syncResult.DeletedCalendars))
+
+	// 显示同步到的日历信息
+	allCalendars := append(syncResult.AddedCalendars, syncResult.UpdatedCalendars...)
+	for i, cal := range allCalendars {
+		log.Printf("Calendar %d:", i+1)
+		log.Printf("  Path: %s", cal.Path)
+		log.Printf("  Name: %s", cal.Name)
+		log.Printf("  Description: %s", cal.Description)
+		log.Printf("  Color: %s", cal.Color)
+		log.Printf("  Supported Components: %v", cal.SupportedComponentSet)
+		log.Printf("  Max Resource Size: %d", cal.MaxResourceSize)
+		log.Printf("  Sync Token: %s", cal.SyncToken)
+		log.Printf("  Current User Privileges: %v", cal.CurrentUserPrivileges)
+		log.Println("  ---")
+	}
+
+	// 4. 测试增量同步
+	if syncResult.NextSyncToken != "" {
+		log.Println("\n--- Step 4: Incremental Calendar List Sync ---")
+		incrementalResult, err := client.SyncCalendarList(ctx, calendarHomeSet, syncResult.NextSyncToken)
+		if err != nil {
+			t.Fatalf("Failed to perform incremental sync: %v", err)
+		}
+
+		log.Printf("Incremental sync completed:")
+		log.Printf("  Next Sync Token: %s", incrementalResult.NextSyncToken)
+		log.Printf("  Added Calendars: %d", len(incrementalResult.AddedCalendars))
+		log.Printf("  Updated Calendars: %d", len(incrementalResult.UpdatedCalendars))
+		log.Printf("  Deleted Calendars: %d", len(incrementalResult.DeletedCalendars))
+	}
+
+	// 5. 测试分页同步 (SyncCalendarListWithLimit)
+	log.Println("\n--- Step 5: Paginated Calendar List Sync ---")
+
+	// 测试限制为 2 个日历的分页同步
+	paginatedResult, err := client.SyncCalendarListWithLimit(ctx, calendarHomeSet, "", 2)
+	if err != nil {
+		t.Fatalf("Failed to sync calendar list with limit: %v", err)
+	}
+
+	log.Printf("Paginated sync (limit=2) completed:")
+	log.Printf("  Next Sync Token: %s", paginatedResult.NextSyncToken)
+	log.Printf("  Added Calendars: %d", len(paginatedResult.AddedCalendars))
+	log.Printf("  Updated Calendars: %d", len(paginatedResult.UpdatedCalendars))
+	log.Printf("  Deleted Calendars: %d", len(paginatedResult.DeletedCalendars))
+
+	// 验证分页结果
+	totalPaginatedCalendars := len(paginatedResult.AddedCalendars) + len(paginatedResult.UpdatedCalendars)
+	if totalPaginatedCalendars > 2 {
+		// Apple CalDAV 服务器可能不支持分页限制，这是正常的
+		log.Printf("Note: Server returned %d calendars despite limit=2, server may not support pagination", totalPaginatedCalendars)
+	} else {
+		log.Printf("Pagination working correctly: returned %d calendars with limit=2", totalPaginatedCalendars)
+	}
+
+	// 6. 测试无限制同步 (limit=0)
+	log.Println("\n--- Step 6: Unlimited Calendar List Sync ---")
+	unlimitedResult, err := client.SyncCalendarListWithLimit(ctx, calendarHomeSet, "", 0)
+	if err != nil {
+		t.Fatalf("Failed to sync calendar list without limit: %v", err)
+	}
+
+	log.Printf("Unlimited sync completed:")
+	log.Printf("  Next Sync Token: %s", unlimitedResult.NextSyncToken)
+	log.Printf("  Added Calendars: %d", len(unlimitedResult.AddedCalendars))
+	log.Printf("  Updated Calendars: %d", len(unlimitedResult.UpdatedCalendars))
+	log.Printf("  Deleted Calendars: %d", len(unlimitedResult.DeletedCalendars))
+
+	// 验证无限制同步应该返回所有日历
+	totalUnlimitedCalendars := len(unlimitedResult.AddedCalendars) + len(unlimitedResult.UpdatedCalendars)
+	totalInitialCalendars := len(syncResult.AddedCalendars) + len(syncResult.UpdatedCalendars)
+
+	if totalUnlimitedCalendars != totalInitialCalendars {
+		t.Errorf("Unlimited sync should return same number of calendars as initial sync. Expected %d, got %d",
+			totalInitialCalendars, totalUnlimitedCalendars)
+	}
+
+	// 7. 测试边界条件：limit=1
+	log.Println("\n--- Step 7: Single Calendar Sync (limit=1) ---")
+	singleResult, err := client.SyncCalendarListWithLimit(ctx, calendarHomeSet, "", 1)
+	if err != nil {
+		t.Fatalf("Failed to sync calendar list with limit=1: %v", err)
+	}
+
+	totalSingleCalendars := len(singleResult.AddedCalendars) + len(singleResult.UpdatedCalendars)
+	if totalSingleCalendars > 1 {
+		// Apple CalDAV 服务器可能不支持分页限制，这是正常的
+		log.Printf("Note: Server returned %d calendars despite limit=1, server may not support pagination", totalSingleCalendars)
+	} else {
+		log.Printf("Pagination working correctly: returned %d calendars with limit=1", totalSingleCalendars)
+	}
+
+	log.Printf("Single calendar sync completed:")
+	log.Printf("  Next Sync Token: %s", singleResult.NextSyncToken)
+	log.Printf("  Total Calendars: %d", totalSingleCalendars)
+
+	log.Println("\n=== Calendar List Sync Test Completed Successfully ===")
 }

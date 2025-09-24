@@ -14,13 +14,12 @@ import (
 const Namespace = "DAV:"
 
 var (
-	ResourceTypeName     = xml.Name{Namespace, "resourcetype"}
-	DisplayNameName      = xml.Name{Namespace, "displayname"}
-	GetContentLengthName = xml.Name{Namespace, "getcontentlength"}
-	GetContentTypeName   = xml.Name{Namespace, "getcontenttype"}
-	GetLastModifiedName  = xml.Name{Namespace, "getlastmodified"}
-	GetETagName          = xml.Name{Namespace, "getetag"}
-
+	ResourceTypeName            = xml.Name{Namespace, "resourcetype"}
+	DisplayNameName             = xml.Name{Namespace, "displayname"}
+	GetContentLengthName        = xml.Name{Namespace, "getcontentlength"}
+	GetContentTypeName          = xml.Name{Namespace, "getcontenttype"}
+	GetLastModifiedName         = xml.Name{Namespace, "getlastmodified"}
+	GetETagName                 = xml.Name{Namespace, "getetag"}
 	CurrentUserPrincipalName    = xml.Name{Namespace, "current-user-principal"}
 	SyncTokenName               = xml.Name{Namespace, "sync-token"}
 	CurrentUserPrivilegeSetName = xml.Name{Namespace, "current-user-privilege-set"}
