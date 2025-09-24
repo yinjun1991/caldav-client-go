@@ -265,16 +265,11 @@ func (c *Client) Options(ctx context.Context, path string) (classes map[string]b
 	return classes, methods, nil
 }
 
-// SyncCollection perform a `sync-collection` REPORT operation on a resource
-func (c *Client) SyncCollection(ctx context.Context, path, syncToken string, level Depth, limit *Limit, prop *Prop) (*MultiStatus, error) {
-	q := SyncCollectionQuery{
-		SyncToken: syncToken,
-		SyncLevel: level.String(),
-		Limit:     limit,
-		Prop:      prop,
-	}
-
-	req, err := c.NewXMLRequest("REPORT", path, &q)
+// Report performs a generic REPORT request with the specified body.
+// This is a low-level method that can be used to implement various REPORT operations
+// like calendar-multiget, calendar-query, sync-collection, etc.
+func (c *Client) Report(ctx context.Context, path string, body interface{}) (*MultiStatus, error) {
+	req, err := c.NewXMLRequest("REPORT", path, body)
 	if err != nil {
 		return nil, err
 	}
@@ -285,4 +280,16 @@ func (c *Client) SyncCollection(ctx context.Context, path, syncToken string, lev
 	}
 
 	return ms, nil
+}
+
+// SyncCollection perform a `sync-collection` REPORT operation on a resource
+func (c *Client) SyncCollection(ctx context.Context, path, syncToken string, level Depth, limit *Limit, prop *Prop) (*MultiStatus, error) {
+	q := SyncCollectionQuery{
+		SyncToken: syncToken,
+		SyncLevel: level.String(),
+		Limit:     limit,
+		Prop:      prop,
+	}
+
+	return c.Report(ctx, path, &q)
 }

@@ -21,7 +21,9 @@ var (
 	GetLastModifiedName  = xml.Name{Namespace, "getlastmodified"}
 	GetETagName          = xml.Name{Namespace, "getetag"}
 
-	CurrentUserPrincipalName = xml.Name{Namespace, "current-user-principal"}
+	CurrentUserPrincipalName    = xml.Name{Namespace, "current-user-principal"}
+	SyncTokenName               = xml.Name{Namespace, "sync-token"}
+	CurrentUserPrivilegeSetName = xml.Name{Namespace, "current-user-privilege-set"}
 )
 
 type Status struct {
@@ -449,4 +451,16 @@ type SyncCollectionQuery struct {
 type Limit struct {
 	XMLName  xml.Name `xml:"DAV: limit"`
 	NResults uint     `xml:"nresults"`
+}
+
+// https://tools.ietf.org/html/rfc3744#section-5.4
+type CurrentUserPrivilegeSet struct {
+	XMLName    xml.Name    `xml:"DAV: current-user-privilege-set"`
+	Privileges []Privilege `xml:"privilege"`
+}
+
+// https://tools.ietf.org/html/rfc3744#section-5.3
+type Privilege struct {
+	XMLName xml.Name      `xml:"DAV: privilege"`
+	Raw     []RawXMLValue `xml:",any"`
 }

@@ -10,19 +10,25 @@ import (
 
 const namespace = "urn:ietf:params:xml:ns:caldav"
 
+const (
+	appleNamespace = "http://apple.com/ns/ical/"
+)
+
 var (
-	calendarHomeSetName = xml.Name{namespace, "calendar-home-set"}
+	CalendarHomeSetName = xml.Name{namespace, "calendar-home-set"}
 
-	calendarDescriptionName           = xml.Name{namespace, "calendar-description"}
-	supportedCalendarDataName         = xml.Name{namespace, "supported-calendar-data"}
-	supportedCalendarComponentSetName = xml.Name{namespace, "supported-calendar-component-set"}
-	maxResourceSizeName               = xml.Name{namespace, "max-resource-size"}
+	CalendarDescriptionName           = xml.Name{namespace, "calendar-description"}
+	SupportedCalendarDataName         = xml.Name{namespace, "supported-calendar-data"}
+	SupportedCalendarComponentSetName = xml.Name{namespace, "supported-calendar-component-set"}
+	MaxResourceSizeName               = xml.Name{namespace, "max-resource-size"}
+	CalendarTimezoneName              = xml.Name{namespace, "calendar-timezone"}
+	CalendarColorName                 = xml.Name{appleNamespace, "calendar-color"}
 
-	calendarQueryName    = xml.Name{namespace, "calendar-query"}
-	calendarMultigetName = xml.Name{namespace, "calendar-multiget"}
+	CalendarQueryName    = xml.Name{namespace, "calendar-query"}
+	CalendarMultigetName = xml.Name{namespace, "calendar-multiget"}
 
-	calendarName     = xml.Name{namespace, "calendar"}
-	calendarDataName = xml.Name{namespace, "calendar-data"}
+	CalendarName     = xml.Name{namespace, "calendar"}
+	CalendarDataName = xml.Name{namespace, "calendar-data"}
 )
 
 // https://tools.ietf.org/html/rfc4791#section-6.2.1
@@ -32,7 +38,7 @@ type calendarHomeSet struct {
 }
 
 func (a *calendarHomeSet) GetXMLName() xml.Name {
-	return calendarHomeSetName
+	return CalendarHomeSetName
 }
 
 // https://tools.ietf.org/html/rfc4791#section-5.2.1
@@ -66,6 +72,35 @@ type maxResourceSize struct {
 	Size    int64    `xml:",chardata"`
 }
 
+// https://tools.ietf.org/html/rfc4791#section-5.2.1
+type calendarTimezone struct {
+	XMLName  xml.Name `xml:"urn:ietf:params:xml:ns:caldav calendar-timezone"`
+	Timezone string   `xml:",chardata"`
+}
+
+// http://calendarserver.org/ns/ getctag extension
+type getctag struct {
+	XMLName xml.Name `xml:"http://calendarserver.org/ns/ getctag"`
+	CTag    string   `xml:",chardata"`
+}
+
+// http://apple.com/ns/ical/ calendar-color extension
+type calendarColor struct {
+	XMLName xml.Name `xml:"http://apple.com/ns/ical/ calendar-color"`
+	Color   string   `xml:",chardata"`
+}
+
+// https://tools.ietf.org/html/rfc4791#section-4.2
+type calendar struct {
+	XMLName xml.Name `xml:"urn:ietf:params:xml:ns:caldav calendar"`
+}
+
+// https://tools.ietf.org/html/rfc4791#section-9.6
+type calendarData struct {
+	XMLName xml.Name `xml:"urn:ietf:params:xml:ns:caldav calendar-data"`
+	Data    []byte   `xml:",chardata"`
+}
+
 // https://tools.ietf.org/html/rfc4791#section-9.5
 type calendarQuery struct {
 	XMLName  xml.Name       `xml:"urn:ietf:params:xml:ns:caldav calendar-query"`
@@ -73,7 +108,6 @@ type calendarQuery struct {
 	AllProp  *struct{}      `xml:"DAV: allprop,omitempty"`
 	PropName *struct{}      `xml:"DAV: propname,omitempty"`
 	Filter   filter         `xml:"filter"`
-	// TODO: timezone
 }
 
 // https://tools.ietf.org/html/rfc4791#section-9.10
@@ -223,10 +257,10 @@ type reportReq struct {
 func (r *reportReq) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
 	var v interface{}
 	switch start.Name {
-	case calendarQueryName:
+	case CalendarQueryName:
 		r.Query = &calendarQuery{}
 		v = r.Query
-	case calendarMultigetName:
+	case CalendarMultigetName:
 		r.Multiget = &calendarMultiget{}
 		v = r.Multiget
 	default:

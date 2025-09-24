@@ -1,0 +1,23 @@
+{
+    "go.testFlags": [
+        "-v"
+    ],
+    "go.testTimeout": "30s",
+    "go.coverOnSave": false,
+    "go.coverOnSingleTest": true,
+    "go.coverOnSingleTestFile": true,
+    "go.coverOnTestPackage": true,
+    "go.testEnvVars": {},
+    "go.toolsManagement.checkForUpdates": "local",
+    "go.useLanguageServer": true,
+    "go.lintOnSave": "package",
+    "go.vetOnSave": "package",
+    "go.buildOnSave": "package",
+    "go.lintTool": "golangci-lint",
+    "go.alternateTools": {
+        "go": "go"
+    },
+    "go.gopath": "",
+    "go.goroot": "",
+    "go.inferGopath": true
+}
