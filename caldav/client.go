@@ -700,7 +700,7 @@ func (c *Client) UpdateCalendar(ctx context.Context, path string, options *Updat
 //
 // The paths parameter should contain the full paths to the calendar objects.
 // The comp parameter specifies which calendar components and properties to retrieve.
-func (c *Client) CalendarMultiget(ctx context.Context, paths []string, comp *CalendarCompRequest) ([]CalendarObject, error) {
+func (c *Client) CalendarMultiget(ctx context.Context, paths []string, comp *CalendarCompRequest) ([]*CalendarObject, error) {
 	if len(paths) == 0 {
 		return nil, nil
 	}
@@ -739,7 +739,7 @@ func (c *Client) CalendarMultiget(ctx context.Context, paths []string, comp *Cal
 	}
 
 	// 解析响应
-	objects := make([]CalendarObject, 0, len(ms.Responses))
+	objects := make([]*CalendarObject, 0, len(ms.Responses))
 	for _, resp := range ms.Responses {
 		path, err := resp.Path()
 		if err != nil {
@@ -751,7 +751,7 @@ func (c *Client) CalendarMultiget(ctx context.Context, paths []string, comp *Cal
 			return nil, err
 		}
 
-		objects = append(objects, *co)
+		objects = append(objects, co)
 	}
 
 	return objects, nil
@@ -812,7 +812,7 @@ func (c *Client) CalendarQuery(ctx context.Context, path string, query *Calendar
 //
 // If fetchData is true, the method will fetch the actual calendar data for each object.
 // If fetchData is false, only metadata (path, etag, etc.) will be returned.
-func (c *Client) ListCalendarObjects(ctx context.Context, path string, fetchData bool) ([]CalendarObject, error) {
+func (c *Client) ListCalendarObjects(ctx context.Context, path string, fetchData bool) ([]*CalendarObject, error) {
 	// 使用 PROPFIND 发现所有日历对象
 	propfind := internal.NewPropNamePropFind(
 		internal.GetETagName,
@@ -828,7 +828,7 @@ func (c *Client) ListCalendarObjects(ctx context.Context, path string, fetchData
 
 	// 收集所有日历对象路径
 	var objectPaths []string
-	var objects []CalendarObject
+	var objects []*CalendarObject
 
 	for _, resp := range ms.Responses {
 		respPath, err := resp.Path()
@@ -856,7 +856,7 @@ func (c *Client) ListCalendarObjects(ctx context.Context, path string, fetchData
 			if err != nil {
 				continue
 			}
-			objects = append(objects, *co)
+			objects = append(objects, co)
 		}
 	}
 

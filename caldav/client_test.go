@@ -247,7 +247,7 @@ func TestAppleSyncCalendar(t *testing.T) {
 	}
 
 	// 使用 CalendarMultiget 批量获取缺失的数据
-	var fetchedObjects []CalendarObject
+	var fetchedObjects []*CalendarObject
 	if len(pathsToFetch) > 0 {
 		log.Printf("Using CalendarMultiget to fetch %d objects with missing data", len(pathsToFetch))
 
@@ -274,7 +274,7 @@ func TestAppleSyncCalendar(t *testing.T) {
 	// 创建路径到获取对象的映射
 	fetchedMap := make(map[string]*CalendarObject)
 	for i := range fetchedObjects {
-		fetchedMap[fetchedObjects[i].Path] = &fetchedObjects[i]
+		fetchedMap[fetchedObjects[i].Path] = fetchedObjects[i]
 	}
 
 	// 打印所有对象的详情
