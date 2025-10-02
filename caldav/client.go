@@ -175,14 +175,16 @@ func (c *Client) PutCalendarObject(ctx context.Context, path string, body io.Rea
 
 	resp, err := c.ic.Do(req.WithContext(ctx))
 	if err != nil {
+		// internal.Client.Do returns *internal.HTTPError for non-2xx
+		if httpErr, ok := err.(*internal.HTTPError); ok {
+			if httpErr.Code == http.StatusPreconditionFailed {
+				return nil, fmt.Errorf("caldav: precondition failed - resource ETag mismatch or conflict")
+			}
+			return nil, httpErr
+		}
 		return nil, err
 	}
 	resp.Body.Close()
-
-	// Handle conditional request failures
-	if resp.StatusCode == http.StatusPreconditionFailed {
-		return nil, fmt.Errorf("caldav: precondition failed - resource ETag mismatch or conflict")
-	}
 
 	co := &CalendarObject{Path: path}
 	if err := populateCalendarObject(co, resp.Header); err != nil {
@@ -232,24 +234,19 @@ func (c *Client) DeleteCalendarObject(ctx context.Context, path string, opts *De
 
 	resp, err := c.ic.Do(req.WithContext(ctx))
 	if err != nil {
+		if httpErr, ok := err.(*internal.HTTPError); ok {
+			switch httpErr.Code {
+			case http.StatusPreconditionFailed:
+				return fmt.Errorf("caldav: precondition failed - resource ETag mismatch, resource may have been modified")
+			case http.StatusNotFound:
+				return fmt.Errorf("caldav: calendar object not found at path: %s", path)
+			default:
+				return httpErr
+			}
+		}
 		return err
 	}
 	resp.Body.Close()
-
-	// Handle conditional request failures
-	if resp.StatusCode == http.StatusPreconditionFailed {
-		return fmt.Errorf("caldav: precondition failed - resource ETag mismatch, resource may have been modified")
-	}
-
-	// Handle resource not found
-	if resp.StatusCode == http.StatusNotFound {
-		return fmt.Errorf("caldav: calendar object not found at path: %s", path)
-	}
-
-	// Check for successful deletion (2xx status codes)
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("caldav: delete failed with status %d: %s", resp.StatusCode, resp.Status)
-	}
 
 	return nil
 }
@@ -469,13 +466,10 @@ func (c *Client) CalendarMultiget(ctx context.Context, paths []string, comp *Cal
 		basePath = basePath[:idx+1]
 	}
 
-	// 调试日志
-	fmt.Printf("CalendarMultiget: basePath=%s, paths=%v\n", basePath, paths)
-
-	ms, err := c.ic.Report(ctx, basePath, multiget)
-	if err != nil {
-		return nil, err
-	}
+    ms, err := c.ic.Report(ctx, basePath, multiget)
+    if err != nil {
+        return nil, err
+    }
 
 	// 解析响应
 	objects := make([]*CalendarObject, 0, len(ms.Responses))
@@ -520,11 +514,11 @@ func (c *Client) CalendarQuery(ctx context.Context, path string, query *Calendar
 		Filter: filter{CompFilter: *filterReq},
 	}
 
-	// 执行 REPORT 请求
-	ms, err := c.ic.Report(ctx, path, &reportReq{Query: calQuery})
-	if err != nil {
-		return nil, err
-	}
+    // 执行 REPORT 请求（直接发送 calendar-query 作为根元素）
+    ms, err := c.ic.Report(ctx, path, calQuery)
+    if err != nil {
+        return nil, err
+    }
 
 	// 解析响应
 	objects := make([]CalendarObject, 0, len(ms.Responses))

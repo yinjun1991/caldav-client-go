@@ -7,20 +7,35 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"os"
 
 	webdav "github.com/yinjun1991/caldav-client-go"
 )
 
-const appleID = "476296008@qq.com"
-const appSpecificPassword = "wnqk-ewqj-pdml-bdvj"
+// Integration tests require valid Apple ID and app-specific password.
+// Set environment variables APPLE_ID and APPLE_APP_PASSWORD to enable.
+
+func getAppleCredsFromEnv() (string, string, bool) {
+    id := os.Getenv("APPLE_ID")
+    pw := os.Getenv("APPLE_APP_PASSWORD")
+    if id == "" || pw == "" {
+        return "", "", false
+    }
+    return id, pw, true
+}
 
 // createAppleClient 创建连接到 Apple iCloud CalDAV 服务器的客户端
 func createAppleClient() (*Client, error) {
 	// Apple iCloud CalDAV 服务器地址
 	endpoint := "https://caldav.icloud.com"
 
+    id, pw, ok := getAppleCredsFromEnv()
+    if !ok {
+        return nil, fmt.Errorf("missing APPLE_ID or APPLE_APP_PASSWORD env; integration tests disabled")
+    }
+
 	// 使用基本认证创建 HTTP 客户端
-	httpClient := webdav.HTTPClientWithBasicAuth(nil, appleID, appSpecificPassword)
+	httpClient := webdav.HTTPClientWithBasicAuth(nil, id, pw)
 
 	// 创建 CalDAV 客户端
 	client, err := NewClient(httpClient, endpoint)
@@ -95,6 +110,9 @@ func createAppleClient() (*Client, error) {
 */
 
 func TestAppleFindCalendars(t *testing.T) {
+    if _, _, ok := getAppleCredsFromEnv(); !ok {
+        t.Skip("Skipping Apple integration test: set APPLE_ID and APPLE_APP_PASSWORD to run")
+    }
 	ctx := context.Background()
 
 	// 创建 Apple CalDAV 客户端
@@ -151,6 +169,9 @@ func TestAppleFindCalendars(t *testing.T) {
 }
 
 func TestAppleSyncCalendar(t *testing.T) {
+    if _, _, ok := getAppleCredsFromEnv(); !ok {
+        t.Skip("Skipping Apple integration test: set APPLE_ID and APPLE_APP_PASSWORD to run")
+    }
 	ctx := context.Background()
 
 	// 创建 Apple CalDAV 客户端
@@ -306,6 +327,9 @@ func TestAppleSyncCalendar(t *testing.T) {
 }
 
 func TestAppleUpdateCalendar(t *testing.T) {
+    if _, _, ok := getAppleCredsFromEnv(); !ok {
+        t.Skip("Skipping Apple integration test: set APPLE_ID and APPLE_APP_PASSWORD to run")
+    }
 	ctx := context.Background()
 
 	// 创建 Apple CalDAV 客户端
@@ -438,6 +462,9 @@ END:VCALENDAR`,
 }
 
 func TestAppleUpdateEvents(t *testing.T) {
+    if _, _, ok := getAppleCredsFromEnv(); !ok {
+        t.Skip("Skipping Apple integration test: set APPLE_ID and APPLE_APP_PASSWORD to run")
+    }
 	ctx := context.Background()
 
 	// 创建 Apple CalDAV 客户端
@@ -559,6 +586,9 @@ func TestAppleUpdateEvents(t *testing.T) {
 }
 
 func TestAppleDeleteEvents(t *testing.T) {
+    if _, _, ok := getAppleCredsFromEnv(); !ok {
+        t.Skip("Skipping Apple integration test: set APPLE_ID and APPLE_APP_PASSWORD to run")
+    }
 	ctx := context.Background()
 
 	// 创建 Apple CalDAV 客户端
@@ -753,7 +783,10 @@ func TestAppleDeleteEvents(t *testing.T) {
 }
 
 func TestAppleCalendarList(t *testing.T) {
-	ctx := context.Background()
+    if _, _, ok := getAppleCredsFromEnv(); !ok {
+        t.Skip("Skipping Apple integration test: set APPLE_ID and APPLE_APP_PASSWORD to run")
+    }
+    ctx := context.Background()
 
 	// 创建 Apple CalDAV 客户端
 	client, err := createAppleClient()
