@@ -269,9 +269,19 @@ func (c *Client) Options(ctx context.Context, path string) (classes map[string]b
 // This is a low-level method that can be used to implement various REPORT operations
 // like calendar-multiget, calendar-query, sync-collection, etc.
 func (c *Client) Report(ctx context.Context, path string, body interface{}) (*MultiStatus, error) {
+	return c.ReportDepth(ctx, path, nil, body)
+}
+
+// ReportDepth performs a REPORT request and optionally sets a Depth header.
+// When depth is nil, the Depth header is omitted.
+func (c *Client) ReportDepth(ctx context.Context, path string, depth *Depth, body interface{}) (*MultiStatus, error) {
 	req, err := c.NewXMLRequest("REPORT", path, body)
 	if err != nil {
 		return nil, err
+	}
+
+	if depth != nil {
+		req.Header.Set("Depth", depth.String())
 	}
 
 	ms, err := c.DoMultiStatus(req.WithContext(ctx))
@@ -291,5 +301,5 @@ func (c *Client) SyncCollection(ctx context.Context, path, syncToken string, lev
 		Prop:      prop,
 	}
 
-	return c.Report(ctx, path, &q)
+	return c.ReportDepth(ctx, path, &level, &q)
 }

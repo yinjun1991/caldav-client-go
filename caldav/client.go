@@ -7,6 +7,7 @@ import (
 	"mime"
 	"net/http"
 	"strings"
+	"time"
 
 	webdav "github.com/yinjun1991/caldav-client-go"
 	"github.com/yinjun1991/caldav-client-go/internal"
@@ -324,6 +325,154 @@ func (c *Client) SyncCalendar(ctx context.Context, path string, query *SyncQuery
 	return ret, nil
 }
 
+// CalendarQueryRange fetches calendar objects within the specified time window.
+// This helper builds a calendar-query REPORT with a VEVENT time-range filter,
+// which is useful for large calendars where a full sync would be expensive.
+// If either start or end is the zero time, that boundary is left open-ended.
+func (c *Client) CalendarQueryRange(ctx context.Context, path string, start, end time.Time) ([]CalendarObject, error) {
+	if start.IsZero() && end.IsZero() {
+		return nil, fmt.Errorf("caldav: time range query requires a non-zero start or end")
+	}
+
+	startUTC := start
+	if !startUTC.IsZero() {
+		startUTC = startUTC.UTC()
+	}
+	endUTC := end
+	if !endUTC.IsZero() {
+		endUTC = endUTC.UTC()
+	}
+
+	if !startUTC.IsZero() && !endUTC.IsZero() && !startUTC.Before(endUTC) {
+		return nil, fmt.Errorf("caldav: start must be before end for time range query")
+	}
+
+	// When both boundaries are provided, split long windows to dodge server-side max-results limits (e.g. Apple iCloud).
+	if !startUTC.IsZero() && !endUTC.IsZero() {
+		return c.calendarQueryRangeWindowed(ctx, path, startUTC, endUTC)
+	}
+
+	return c.calendarQueryRangeOnce(ctx, path, startUTC, endUTC)
+}
+
+const (
+	defaultCalendarRangeWindow = 90 * 24 * time.Hour
+	minCalendarRangeWindow     = 24 * time.Hour
+)
+
+func (c *Client) calendarQueryRangeWindowed(ctx context.Context, path string, start, end time.Time) ([]CalendarObject, error) {
+	var (
+		results []CalendarObject
+		index   = make(map[string]int)
+		cursor  = start
+	)
+
+	for cursor.Before(end) {
+		windowEnd := cursor.Add(defaultCalendarRangeWindow)
+		if windowEnd.After(end) {
+			windowEnd = end
+		}
+
+		chunk, err := c.calendarQueryRangeRecursive(ctx, path, cursor, windowEnd)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, obj := range chunk {
+			if idx, ok := index[obj.Path]; ok {
+				results[idx] = obj
+			} else {
+				index[obj.Path] = len(results)
+				results = append(results, obj)
+			}
+		}
+
+		if !windowEnd.After(cursor) {
+			break
+		}
+		cursor = windowEnd
+	}
+
+	return results, nil
+}
+
+func (c *Client) calendarQueryRangeRecursive(ctx context.Context, path string, start, end time.Time) ([]CalendarObject, error) {
+	objs, err := c.calendarQueryRangeOnce(ctx, path, start, end)
+	if err == nil {
+		return objs, nil
+	}
+
+	httpErr, ok := err.(*internal.HTTPError)
+	if !ok {
+		return nil, err
+	}
+
+	if end.Sub(start) <= minCalendarRangeWindow {
+		return nil, httpErr
+	}
+	if httpErr.Code != http.StatusInsufficientStorage {
+		return nil, httpErr
+	}
+
+	mid := start.Add(end.Sub(start) / 2)
+	if !mid.After(start) {
+		return nil, httpErr
+	}
+
+	left, err := c.calendarQueryRangeRecursive(ctx, path, start, mid)
+	if err != nil {
+		return nil, err
+	}
+
+	right, err := c.calendarQueryRangeRecursive(ctx, path, mid, end)
+	if err != nil {
+		return nil, err
+	}
+
+	combined := make([]CalendarObject, 0, len(left)+len(right))
+	combined = append(combined, left...)
+	combined = append(combined, right...)
+	return combined, nil
+}
+
+func (c *Client) calendarQueryRangeOnce(ctx context.Context, path string, start, end time.Time) ([]CalendarObject, error) {
+	eventFilter := CompFilter{Name: "VEVENT"}
+	if !start.IsZero() {
+		eventFilter.Start = start
+	}
+	if !end.IsZero() {
+		eventFilter.End = end
+	}
+
+	compReq := CalendarCompRequest{
+		Name:     "VCALENDAR",
+		AllProps: true,
+		Comps: []CalendarCompRequest{
+			{
+				Name:     "VEVENT",
+				AllProps: true,
+			},
+		},
+	}
+
+	if !start.IsZero() && !end.IsZero() {
+		compReq.Expand = &CalendarExpandRequest{
+			Start: start,
+			End:   end,
+		}
+	}
+
+	req := &CalendarQueryRequest{
+		CompRequest: compReq,
+		Filter: CompFilter{
+			Name:  "VCALENDAR",
+			Comps: []CompFilter{eventFilter},
+		},
+	}
+
+	return c.CalendarQuery(ctx, path, req)
+}
+
 // UpdateCalendar updates the properties of a Calendar collection using PROPPATCH.
 // This method follows CalDAV RFC 4791 and WebDAV RFC 4918 specifications for
 // updating collection properties.
@@ -466,10 +615,11 @@ func (c *Client) CalendarMultiget(ctx context.Context, paths []string, comp *Cal
 		basePath = basePath[:idx+1]
 	}
 
-    ms, err := c.ic.Report(ctx, basePath, multiget)
-    if err != nil {
-        return nil, err
-    }
+	depth := internal.DepthOne
+	ms, err := c.ic.ReportDepth(ctx, basePath, &depth, multiget)
+	if err != nil {
+		return nil, err
+	}
 
 	// 解析响应
 	objects := make([]*CalendarObject, 0, len(ms.Responses))
@@ -514,11 +664,12 @@ func (c *Client) CalendarQuery(ctx context.Context, path string, query *Calendar
 		Filter: filter{CompFilter: *filterReq},
 	}
 
-    // 执行 REPORT 请求（直接发送 calendar-query 作为根元素）
-    ms, err := c.ic.Report(ctx, path, calQuery)
-    if err != nil {
-        return nil, err
-    }
+	// 执行 REPORT 请求（直接发送 calendar-query 作为根元素）
+	depth := internal.DepthOne
+	ms, err := c.ic.ReportDepth(ctx, path, &depth, calQuery)
+	if err != nil {
+		return nil, err
+	}
 
 	// 解析响应
 	objects := make([]CalendarObject, 0, len(ms.Responses))
