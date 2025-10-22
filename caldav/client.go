@@ -1,11 +1,13 @@
 package caldav
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"io"
 	"mime"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -261,9 +263,18 @@ func (c *Client) DeleteCalendarObjectSimple(ctx context.Context, path string) er
 // SyncCalendar performs a collection synchronization operation on the
 // specified resource, as defined in RFC 6578.
 func (c *Client) SyncCalendar(ctx context.Context, path string, query *SyncQuery) (*SyncResponse, error) {
+	if query == nil {
+		query = &SyncQuery{}
+	}
+
 	var limit *internal.Limit
 	if query.Limit > 0 {
 		limit = &internal.Limit{NResults: uint(query.Limit)}
+	}
+
+	var startCutoff time.Time
+	if query.SyncToken == "" && !query.StartTime.IsZero() {
+		startCutoff = query.StartTime.UTC()
 	}
 
 	// 使用标准的日历组件请求，确保同步时获取完整的日程数据
@@ -290,6 +301,8 @@ func (c *Client) SyncCalendar(ctx context.Context, path string, query *SyncQuery
 	}
 
 	ret := &SyncResponse{SyncToken: ms.SyncToken}
+	pendingPaths := make([]string, 0)
+	pendingObjects := make(map[string]*CalendarObject)
 	for _, resp := range ms.Responses {
 		p, err := resp.Path()
 		if err != nil {
@@ -301,7 +314,7 @@ func (c *Client) SyncCalendar(ctx context.Context, path string, query *SyncQuery
 		}
 
 		// 检查是否是集合本身
-		if p == path || path == fmt.Sprintf("%s/", p) || strings.TrimSuffix(p, "/") == strings.TrimSuffix(path, "/") {
+		if sameCollectionPath(p, path) {
 			// 解析集合属性
 			calendar, err := parseCalendarFromResponse(&resp)
 			if err != nil {
@@ -319,10 +332,245 @@ func (c *Client) SyncCalendar(ctx context.Context, path string, query *SyncQuery
 			return nil, err
 		}
 
+		// When a start cutoff is provided, only surface items modified at or after that timestamp.
+		if !startCutoff.IsZero() {
+			// If calendar-data is missing, fetch it later via multiget so we can evaluate recurrence rules.
+			if len(co.Data) == 0 {
+				pendingPaths = append(pendingPaths, p)
+				pendingObjects[p] = co
+				continue
+			}
+			if !shouldIncludeForStartCutoff(co, startCutoff) {
+				continue
+			}
+		}
+
 		ret.Updated = append(ret.Updated, co)
 	}
 
+	if !startCutoff.IsZero() && len(pendingPaths) > 0 {
+		fetchedObjects, err := c.CalendarMultiget(ctx, pendingPaths, &standardCompRequest)
+		if err != nil {
+			return nil, err
+		}
+		fetchedByPath := make(map[string]*CalendarObject, len(fetchedObjects))
+		for _, fo := range fetchedObjects {
+			if fo == nil {
+				continue
+			}
+			fetchedByPath[fo.Path] = fo
+		}
+		for _, path := range pendingPaths {
+			co := pendingObjects[path]
+			if fetched, ok := fetchedByPath[path]; ok {
+				co.Data = fetched.Data
+				if !fetched.ModTime.IsZero() {
+					co.ModTime = fetched.ModTime
+				}
+				if fetched.ContentLength != 0 {
+					co.ContentLength = fetched.ContentLength
+				}
+				if fetched.ETag != "" {
+					co.ETag = fetched.ETag
+				}
+			}
+			if !shouldIncludeForStartCutoff(co, startCutoff) {
+				continue
+			}
+			ret.Updated = append(ret.Updated, co)
+		}
+	}
+
 	return ret, nil
+}
+
+func shouldIncludeForStartCutoff(co *CalendarObject, cutoff time.Time) bool {
+	if co == nil {
+		return false
+	}
+
+	meta, err := extractEventMetadata(co.Data)
+	if err == nil {
+		if meta.recurring {
+			if meta.recurrenceEnd.IsZero() {
+				return true
+			}
+			// include when recurrence still active at cutoff
+			if !meta.recurrenceEnd.Before(cutoff) {
+				return true
+			}
+			return false
+		}
+
+		// Non-recurring event: include when it starts or ends after the cutoff.
+		if !meta.end.IsZero() {
+			if !meta.end.Before(cutoff) {
+				return true
+			}
+			return false
+		}
+		if !meta.start.IsZero() {
+			return !meta.start.Before(cutoff)
+		}
+	}
+
+	// Fallback to modification time when we cannot parse metadata or no data provided.
+	if !co.ModTime.IsZero() {
+		return !co.ModTime.UTC().Before(cutoff)
+	}
+
+	return true
+}
+
+type eventMetadata struct {
+	start          time.Time
+	end            time.Time
+	recurring      bool
+	recurrenceEnd  time.Time
+	recurrenceOpen bool
+}
+
+func extractEventMetadata(data []byte) (*eventMetadata, error) {
+	if len(data) == 0 {
+		return nil, fmt.Errorf("caldav: empty event payload")
+	}
+
+	meta := &eventMetadata{}
+	source := strings.ReplaceAll(string(data), "\r\n", "\n")
+	lines, err := unfoldICSLines(source)
+	if err != nil {
+		return nil, err
+	}
+
+	var inEvent bool
+	for _, line := range lines {
+		switch {
+		case strings.EqualFold(line, "BEGIN:VEVENT"):
+			inEvent = true
+			continue
+		case strings.EqualFold(line, "END:VEVENT"):
+			inEvent = false
+			continue
+		}
+
+		if !inEvent {
+			continue
+		}
+
+		upper := strings.ToUpper(line)
+		switch {
+		case strings.HasPrefix(upper, "DTSTART"):
+			value := extractICSValue(line)
+			if value == "" {
+				continue
+			}
+			if t, err := parseICSTime(value); err == nil {
+				meta.start = t
+			}
+		case strings.HasPrefix(upper, "DTEND"):
+			value := extractICSValue(line)
+			if value == "" {
+				continue
+			}
+			if t, err := parseICSTime(value); err == nil {
+				meta.end = t
+			}
+		case strings.HasPrefix(upper, "RRULE"):
+			value := extractICSValue(line)
+			if value == "" {
+				continue
+			}
+			meta.recurring = true
+			meta.recurrenceOpen = true // assume open until proven otherwise
+			for _, part := range strings.Split(value, ";") {
+				kv := strings.SplitN(part, "=", 2)
+				if len(kv) != 2 {
+					continue
+				}
+				key := strings.ToUpper(strings.TrimSpace(kv[0]))
+				val := strings.TrimSpace(kv[1])
+				switch key {
+				case "UNTIL":
+					if t, err := parseICSTime(val); err == nil {
+						meta.recurrenceEnd = t
+						meta.recurrenceOpen = false
+					}
+				case "COUNT":
+					if _, err := strconv.Atoi(val); err == nil {
+						meta.recurrenceOpen = false
+					}
+				}
+			}
+		}
+	}
+
+	if meta.recurring {
+		return meta, nil
+	}
+	if meta.start.IsZero() && meta.end.IsZero() {
+		return nil, fmt.Errorf("caldav: event metadata missing DTSTART/DTEND")
+	}
+	return meta, nil
+}
+
+func unfoldICSLines(data string) ([]string, error) {
+	var (
+		lines   []string
+		current string
+	)
+	scanner := bufio.NewScanner(strings.NewReader(data))
+	for scanner.Scan() {
+		line := strings.TrimRight(scanner.Text(), "\r")
+		if strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") {
+			current += strings.TrimLeft(line, " \t")
+			continue
+		}
+		if current != "" {
+			lines = append(lines, current)
+		}
+		current = line
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	if current != "" {
+		lines = append(lines, current)
+	}
+	return lines, nil
+}
+
+func extractICSValue(line string) string {
+	if idx := strings.Index(line, ":"); idx >= 0 && idx+1 < len(line) {
+		return strings.TrimSpace(line[idx+1:])
+	}
+	return ""
+}
+
+func parseICSTime(value string) (time.Time, error) {
+	value = strings.TrimSpace(value)
+	layouts := []string{
+		"20060102T150405Z",
+		"20060102T150405",
+		"20060102",
+	}
+	for _, layout := range layouts {
+		if layout == "20060102T150405Z" && !strings.HasSuffix(value, "Z") {
+			continue
+		}
+		if layout == "20060102T150405" && strings.HasSuffix(value, "Z") {
+			continue
+		}
+		if t, err := time.Parse(layout, value); err == nil {
+			if layout == "20060102" {
+				return t.UTC(), nil
+			}
+			if strings.HasSuffix(layout, "Z") {
+				return t.UTC(), nil
+			}
+			return t, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("caldav: unsupported ics time %q", value)
 }
 
 // CalendarQueryRange fetches calendar objects within the specified time window.
@@ -721,7 +969,7 @@ func (c *Client) ListCalendarObjects(ctx context.Context, path string, fetchData
 		}
 
 		// 跳过集合本身
-		if respPath == path || respPath == strings.TrimSuffix(path, "/") {
+		if sameCollectionPath(respPath, path) {
 			continue
 		}
 
@@ -806,9 +1054,7 @@ func (c *Client) SyncCalendarListWithLimit(
 		}
 
 		// 跳过日历主集合本身
-		if path == calendarHomeSetURL ||
-			path == strings.TrimSuffix(calendarHomeSetURL, "/") ||
-			strings.TrimSuffix(path, "/") == strings.TrimSuffix(calendarHomeSetURL, "/") {
+		if sameCollectionPath(path, calendarHomeSetURL) {
 			continue
 		}
 

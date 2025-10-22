@@ -383,6 +383,7 @@ func TestAppleCalendarQueryRange(t *testing.T) {
 			t.Fatalf("duplicate path in results: %s", obj.Path)
 		}
 		seen[obj.Path] = struct{}{}
+		fmt.Printf("obj %s data %s %d\n", obj.Path, string(obj.Data), len(obj.Data))
 	}
 
 	log.Printf("CalendarQueryRange returned %d objects from %s", len(objs), targetCalendar)
@@ -521,6 +522,144 @@ END:VCALENDAR`,
 		formatTime(now),
 		summary,
 		description)
+}
+
+func buildCustomICSEvent(uid, summary, description string, start, end, stamp time.Time, extraProps []string) string {
+	formatTime := func(t time.Time) string {
+		return t.UTC().Format("20060102T150405Z")
+	}
+
+	lines := []string{
+		"BEGIN:VCALENDAR",
+		"VERSION:2.0",
+		"PRODID:-//Go WebDAV//Integration Test//EN",
+		"BEGIN:VEVENT",
+		fmt.Sprintf("UID:%s", uid),
+		fmt.Sprintf("DTSTART:%s", formatTime(start)),
+	}
+	if !end.IsZero() {
+		lines = append(lines, fmt.Sprintf("DTEND:%s", formatTime(end)))
+	}
+	lines = append(lines,
+		fmt.Sprintf("DTSTAMP:%s", formatTime(stamp)),
+		fmt.Sprintf("CREATED:%s", formatTime(stamp)),
+		fmt.Sprintf("LAST-MODIFIED:%s", formatTime(stamp)),
+	)
+	lines = append(lines, extraProps...)
+	lines = append(lines,
+		fmt.Sprintf("SUMMARY:%s", summary),
+		fmt.Sprintf("DESCRIPTION:%s", description),
+		"END:VEVENT",
+		"END:VCALENDAR",
+	)
+
+	return strings.Join(lines, "\n")
+}
+
+func TestAppleSyncCalendarStartTimeRecurringInclusion(t *testing.T) {
+	if _, _, ok := getAppleCredsFromEnv(); !ok {
+		t.Skip("Skipping Apple integration test: set APPLE_ID and APPLE_APP_PASSWORD to run")
+	}
+
+	ctx := context.Background()
+
+	client, err := createAppleClient()
+	if err != nil {
+		t.Fatalf("create Apple client: %v", err)
+	}
+
+	principal, err := client.FindCurrentUserPrincipal(ctx)
+	if err != nil {
+		t.Fatalf("find principal: %v", err)
+	}
+
+	calendarHomeSet, err := client.FindCalendarHomeSet(ctx, principal)
+	if err != nil {
+		t.Fatalf("find calendar home set: %v", err)
+	}
+
+	calendars, err := client.FindCalendars(ctx, calendarHomeSet)
+	if err != nil {
+		t.Fatalf("find calendars: %v", err)
+	}
+	if len(calendars) == 0 {
+		t.Skip("no calendars available for start-time sync test")
+	}
+
+	var calendar Calendar
+	for _, cal := range calendars {
+		for _, comp := range cal.SupportedComponentSet {
+			if strings.EqualFold(comp, "VEVENT") {
+				calendar = cal
+				break
+			}
+		}
+		if calendar.Path != "" {
+			break
+		}
+	}
+	if calendar.Path == "" {
+		t.Skip("no calendar supporting VEVENT found for start-time sync test")
+	}
+
+	basePath := strings.TrimSuffix(calendar.Path, "/")
+	oldStamp := time.Now().UTC().Add(-72 * time.Hour)
+	cutoff := time.Now().UTC().Add(-24 * time.Hour)
+
+	singleUID := fmt.Sprintf("cutoff-single-%d@go-webdav", time.Now().UnixNano())
+	recurringUID := fmt.Sprintf("cutoff-recurring-%d@go-webdav", time.Now().UnixNano())
+
+	singlePath := fmt.Sprintf("%s/%s.ics", basePath, singleUID)
+	recurringPath := fmt.Sprintf("%s/%s.ics", basePath, recurringUID)
+
+	singleStart := cutoff.Add(-48 * time.Hour)
+	singleEnd := singleStart.Add(1 * time.Hour)
+	recurringStart := cutoff.Add(-48 * time.Hour)
+	recurringEnd := recurringStart.Add(1 * time.Hour)
+
+	singleICS := buildCustomICSEvent(singleUID, "Past Single Event", "Should be filtered by cutoff", singleStart, singleEnd, oldStamp, nil)
+	recurringICS := buildCustomICSEvent(recurringUID, "Past Recurring Event", "Should bypass cutoff due to recurrence", recurringStart, recurringEnd, oldStamp, []string{"RRULE:FREQ=DAILY"})
+
+	// Ensure cleanup even if assertions fail.
+	t.Cleanup(func() {
+		_ = client.DeleteCalendarObjectSimple(ctx, singlePath)
+		_ = client.DeleteCalendarObjectSimple(ctx, recurringPath)
+	})
+
+	if _, err := client.PutCalendarObjectSimple(ctx, singlePath, strings.NewReader(singleICS)); err != nil {
+		t.Fatalf("create single event: %v", err)
+	}
+	if _, err := client.PutCalendarObjectSimple(ctx, recurringPath, strings.NewReader(recurringICS)); err != nil {
+		t.Fatalf("create recurring event: %v", err)
+	}
+
+	// Allow the server to index the new events before syncing.
+	time.Sleep(2 * time.Second)
+
+	resp, err := client.SyncCalendar(ctx, calendar.Path, &SyncQuery{StartTime: cutoff})
+	if err != nil {
+		t.Fatalf("SyncCalendar error: %v", err)
+	}
+
+	var (
+		recurringFound bool
+		singleFound    bool
+	)
+	for _, obj := range resp.Updated {
+		switch obj.Path {
+		case recurringPath:
+			recurringFound = true
+		case singlePath:
+			singleFound = true
+		}
+	}
+
+	if singleFound {
+		t.Fatalf("single past event %s was unexpectedly synced", singlePath)
+	}
+	if !recurringFound {
+		t.Fatalf("recurring past event %s was not synced", recurringPath)
+	}
 }
 
 func TestAppleUpdateEvents(t *testing.T) {

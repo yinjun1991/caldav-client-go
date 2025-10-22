@@ -439,3 +439,73 @@ func TestSyncCalendarDecoding(t *testing.T) {
 		t.Fatalf("unexpected updated object etag: %q", resp.Updated[0].ETag)
 	}
 }
+
+func TestSyncCalendarStartTimeFilter(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "REPORT" {
+			t.Fatalf("expected REPORT, got %s", r.Method)
+		}
+		w.Header().Set("Content-Type", "application/xml; charset=utf-8")
+		w.WriteHeader(http.StatusMultiStatus)
+		io.WriteString(w, `<?xml version="1.0" encoding="utf-8"?>
+<d:multistatus xmlns:d="DAV:" xmlns:cal="urn:ietf:params:xml:ns:caldav">
+  <d:sync-token>token-456</d:sync-token>
+  <d:response>
+    <d:href>/cal/</d:href>
+    <d:propstat>
+      <d:prop>
+        <d:resourcetype><d:collection/><cal:calendar/></d:resourcetype>
+        <d:getetag>"caletag"</d:getetag>
+      </d:prop>
+      <d:status>HTTP/1.1 200 OK</d:status>
+    </d:propstat>
+  </d:response>
+  <d:response>
+    <d:href>/cal/event-before.ics</d:href>
+    <d:propstat>
+      <d:prop>
+        <d:getlastmodified>Mon, 02 Oct 2023 10:00:00 GMT</d:getlastmodified>
+        <d:getetag>"before"</d:getetag>
+        <d:getcontentlength>10</d:getcontentlength>
+        <cal:calendar-data>BEGIN:VCALENDAR\nBEGIN:VEVENT\nEND:VEVENT\nEND:VCALENDAR</cal:calendar-data>
+      </d:prop>
+      <d:status>HTTP/1.1 200 OK</d:status>
+    </d:propstat>
+  </d:response>
+  <d:response>
+    <d:href>/cal/event-after.ics</d:href>
+    <d:propstat>
+      <d:prop>
+        <d:getlastmodified>Mon, 02 Oct 2023 14:00:00 GMT</d:getlastmodified>
+        <d:getetag>"after"</d:getetag>
+        <d:getcontentlength>15</d:getcontentlength>
+        <cal:calendar-data>BEGIN:VCALENDAR\nBEGIN:VEVENT\nEND:VEVENT\nEND:VCALENDAR</cal:calendar-data>
+      </d:prop>
+      <d:status>HTTP/1.1 200 OK</d:status>
+    </d:propstat>
+  </d:response>
+</d:multistatus>`)
+	}))
+	defer ts.Close()
+
+	c, err := newTestClient(ts)
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	ctx := context.Background()
+	cutoff := time.Date(2023, 10, 2, 12, 0, 0, 0, time.UTC)
+	resp, err := c.SyncCalendar(ctx, "/cal/", &SyncQuery{StartTime: cutoff})
+	if err != nil {
+		t.Fatalf("SyncCalendar error: %v", err)
+	}
+	if len(resp.Updated) != 1 {
+		t.Fatalf("expected 1 updated object, got %d", len(resp.Updated))
+	}
+	if resp.Updated[0].Path != "/cal/event-after.ics" {
+		t.Fatalf("unexpected object returned: %s", resp.Updated[0].Path)
+	}
+	if got, want := resp.Updated[0].ETag, "after"; got != want {
+		t.Fatalf("unexpected etag, got %s want %s", got, want)
+	}
+}

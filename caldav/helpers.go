@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/yinjun1991/caldav-client-go/internal"
@@ -214,6 +215,20 @@ func populateCalendarObject(co *CalendarObject, h http.Header) error {
 	}
 
 	return nil
+}
+
+func sameCollectionPath(a, b string) bool {
+	if a == b {
+		return true
+	}
+	return normalizeCollectionPath(a) == normalizeCollectionPath(b)
+}
+
+func normalizeCollectionPath(p string) string {
+	if p == "" || p == "/" {
+		return p
+	}
+	return strings.TrimRight(p, "/")
 }
 
 func encodeCompFilter(cf *CompFilter) (*compFilter, error) {

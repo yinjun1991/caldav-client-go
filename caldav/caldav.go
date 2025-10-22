@@ -77,6 +77,11 @@ type CalendarObject struct {
 type SyncQuery struct {
 	SyncToken string
 	Limit     int // <= 0 means unlimited
+
+	// StartTime filters updated resources so only items modified at or after this time are returned.
+	// Use the zero value to include all results from the server. When both SyncToken and StartTime
+	// are provided, SyncCalendar ignores StartTime and relies on SyncToken for incremental syncs.
+	StartTime time.Time
 }
 
 // SyncResponse contains the returned sync-token for next time
